@@ -1,0 +1,391 @@
+esphome:
+  name: litter-robot-esp32
+  friendly_name: "Litter Robot ESP32"
+  on_boot:
+    priority: -10
+    then:
+      - output.turn_off: fake_gnd_pinch
+      - script.execute: stop_motor
+      - switch.template.publish:
+          id: switch_forward
+          state: OFF
+      - switch.template.publish:
+          id: switch_reverse
+          state: OFF
+
+esp32:
+  board: nodemcu-32s
+  framework:
+    type: arduino
+
+wifi:
+  ssid: [wifi id]
+  password: [wifi pass]
+  ap:
+    ssid: "Litter-Robot Fallback"
+    password: "changeme123"
+
+captive_portal:
+
+logger:
+  level: INFO
+
+api:
+  reboot_timeout: 0s
+
+ota:
+  platform: esphome
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    type: digest
+    username: glow
+    password: !secret litter_robot_esp32__web_password
+
+# ----------------------------------------
+# BACKGROUND MEMORY FOR STATISTICS
+# ----------------------------------------
+globals:
+  - id: global_clean_counter
+    type: int
+    restore_value: true
+    initial_value: '0'
+
+# ----------------------------------------
+# 1. MOTOR DRIVER PWM OUTPUTS
+# ----------------------------------------
+output:
+  - platform: ledc
+    pin: GPIO18
+    id: motor_in1
+    max_power: 0.80
+
+  - platform: ledc
+    pin: GPIO19
+    id: motor_in2
+    max_power: 0.80
+
+  - platform: gpio
+    pin: GPIO25
+    id: fake_gnd_pinch
+
+# ----------------------------------------
+# 2. MOTOR CONTROL SCRIPTS
+# ----------------------------------------
+script:
+  - id: cycle_forward
+    then:
+      - output.set_level:
+          id: motor_in1
+          level: 100%
+      - output.set_level:
+          id: motor_in2
+          level: 0%
+      - output.turn_off: motor_in2
+
+  - id: cycle_reverse
+    then:
+      - output.set_level:
+          id: motor_in2
+          level: 100%
+      - output.set_level:
+          id: motor_in1
+          level: 0%
+      - output.turn_off: motor_in1
+
+  - id: stop_motor
+    then:
+      - output.set_level:
+          id: motor_in1
+          level: 0%
+      - output.set_level:
+          id: motor_in2
+          level: 0%
+      - output.turn_off: motor_in1
+      - output.turn_off: motor_in2
+
+  - id: clean_cycle
+    then:
+      - switch.turn_on: switch_forward
+      - wait_until:
+          binary_sensor.is_on: hall_yellow
+      - switch.turn_off: switch_forward
+      - delay: 3s
+      - switch.turn_on: switch_reverse
+      - wait_until:
+          binary_sensor.is_on: hall_orange
+      - delay: 10s
+      - switch.turn_off: switch_reverse
+      - delay: 3s
+      - switch.turn_on: switch_forward
+      - wait_until:
+          binary_sensor.is_on: hall_orange
+      - switch.turn_off: switch_forward
+
+  - id: dump_litter_routine
+    then:
+      - switch.turn_on: switch_reverse
+      - wait_until:
+          binary_sensor.is_on: hall_yellow
+      - delay: 7s
+      - switch.turn_off: switch_reverse
+
+  - id: dump_to_home_routine
+    then:
+      - switch.turn_on: switch_forward
+      - wait_until:
+          binary_sensor.is_on: hall_orange
+      - switch.turn_off: switch_forward
+
+  # Master Countdown Manager
+  - id: cancel_countdown
+    then:
+      - script.stop: automated_clean_countdown
+      - binary_sensor.template.publish:
+          id: countdown_active
+          state: OFF
+
+  - id: automated_clean_countdown
+    mode: restart
+    then:
+      - binary_sensor.template.publish:
+          id: countdown_active
+          state: ON
+      
+      # Wait based on the number slider
+      - delay: !lambda "return (uint32_t)(id(delay_timer_minutes).state * 60000);"
+
+      # Increment the background counter right before the cycle starts
+      - globals.set:
+          id: global_clean_counter
+          value: !lambda 'return id(global_clean_counter) + 1;'
+
+      # Instantly push the new number to the UI screen
+      - sensor.template.publish:
+          id: clean_counter_display
+          state: !lambda 'return id(global_clean_counter);'
+
+      # START the clean cycle
+      - script.execute: clean_cycle
+      
+      # Reset the UI indicator
+      - binary_sensor.template.publish:
+          id: countdown_active
+          state: OFF
+
+# ----------------------------------------
+# 3. MANUAL OVERRIDE SWITCHES
+# ----------------------------------------
+switch:
+  - platform: template
+    name: "Action: Spin Forward"
+    id: switch_forward
+    turn_on_action:
+      - script.execute: cancel_countdown
+      - switch.turn_off: switch_reverse
+      - script.execute: cycle_forward
+      - switch.template.publish:
+          id: switch_forward
+          state: ON
+    turn_off_action:
+      - script.execute: stop_motor
+      - switch.template.publish:
+          id: switch_forward
+          state: OFF
+
+  - platform: template
+    name: "Action: Spin Reverse"
+    id: switch_reverse
+    turn_on_action:
+      - script.execute: cancel_countdown
+      - switch.turn_off: switch_forward
+      - script.execute: cycle_reverse
+      - switch.template.publish:
+          id: switch_reverse
+          state: ON
+    turn_off_action:
+      - script.execute: stop_motor
+      - switch.template.publish:
+          id: switch_reverse
+          state: OFF
+
+# ----------------------------------------
+# 4. BUTTONS (UI Controls & System)
+# ----------------------------------------
+button:
+  - platform: template
+    name: "Action: Clean Cycle"
+    id: button_clean
+    on_press:
+      - script.execute: cancel_countdown
+      - script.execute: clean_cycle
+
+  - platform: template
+    name: "Action: Dump Litter"
+    id: button_dump_litter
+    on_press:
+      - script.execute: cancel_countdown
+      - script.execute: dump_litter_routine
+
+  - platform: template
+    name: "Action: Dump Reset"
+    id: button_dump_to_home
+    icon: "mdi:alert"
+    on_press:
+      - script.execute: cancel_countdown
+      - script.execute: dump_to_home_routine
+
+  - platform: template
+    name: "Action: Stop Motor"
+    id: button_stop
+    icon: "mdi:stop-circle-outline"
+    on_press:
+      - script.execute: cancel_countdown
+      - script.stop: clean_cycle
+      - script.stop: dump_litter_routine
+      - script.stop: dump_to_home_routine
+      - script.execute: stop_motor
+      - switch.template.publish:
+          id: switch_forward
+          state: OFF
+      - switch.template.publish:
+          id: switch_reverse
+          state: OFF
+
+  - platform: restart
+    name: "Reboot ESP32"
+    entity_category: diagnostic
+
+# ----------------------------------------
+# 5. CONFIGURATION & TIMER SETTINGS
+# ----------------------------------------
+number:
+  - platform: template
+    name: "Clean Delay"
+    id: delay_timer_minutes
+    icon: "mdi:timer-outline"
+    entity_category: config
+    min_value: 2
+    max_value: 20
+    step: 1
+    initial_value: 7
+    optimistic: true
+    restore_value: true
+
+# ----------------------------------------
+# 6. ANALOG SENSORS (Weight & Triggers)
+# ----------------------------------------
+sensor:
+  - platform: adc
+    pin: GPIO32
+    id: cat_weight_sensor
+    name: "Sensor: Weight"
+    update_interval: 0.1s
+    attenuation: 12db
+    filters:
+      - sliding_window_moving_average:
+          window_size: 10
+          send_every: 5
+    
+    # Hysteresis Logic for Cat Detection
+    on_value_range:
+      - below: 2.0
+        then:
+          - if:
+              condition:
+                binary_sensor.is_off: cat_present
+              then:
+                - binary_sensor.template.publish:
+                    id: cat_present
+                    state: ON
+                - script.execute: cancel_countdown
+                - script.stop: clean_cycle
+                - script.stop: dump_litter_routine
+                - script.stop: dump_to_home_routine
+                - script.execute: stop_motor
+                - switch.template.publish:
+                    id: switch_forward
+                    state: OFF
+                - switch.template.publish:
+                    id: switch_reverse
+                    state: OFF
+
+      - above: 2.5
+        then:
+          - if:
+              condition:
+                binary_sensor.is_on: cat_present
+              then:
+                - binary_sensor.template.publish:
+                    id: cat_present
+                    state: OFF
+                - script.execute: automated_clean_countdown
+
+  # Clean Read-Only Display for the Counter
+  - platform: template
+    name: "Statistic: Cleaned"
+    id: clean_counter_display
+    icon: "mdi:counter"
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: 'return id(global_clean_counter);'
+
+# ----------------------------------------
+# 7. DIGITAL SENSORS & UI STATUS
+# ----------------------------------------
+binary_sensor:
+  # Virtual UI Indicator: Is the cat inside?
+  - platform: template
+    name: "Status: Cat Present"
+    id: cat_present
+    device_class: occupancy
+
+  # Virtual UI Indicator: Is the timer running?
+  - platform: template
+    name: "Status: Countdown"
+    id: countdown_active
+    device_class: running
+
+  # Hall Effect Sensor (Dump Position)
+  - platform: gpio
+    pin:
+      number: GPIO16
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Sensor: Pos Dump"
+    id: hall_yellow
+    device_class: window 
+
+  # Hall Effect Sensor (Home Position)
+  - platform: gpio
+    pin:
+      number: GPIO17
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Sensor: Pos Home"
+    id: hall_orange
+    device_class: window
+
+  # Pinch Sensor (Safety Interrupt)
+  - platform: gpio
+    pin:
+      number: GPIO26
+      mode: INPUT_PULLUP
+    name: "Sensor: Pinch Switch"
+    id: pinch_sensor
+    device_class: safety
+    on_press:
+      - if:
+          condition:
+            switch.is_on: switch_reverse
+          then:
+            - script.execute: cancel_countdown
+            - script.stop: clean_cycle
+            - script.stop: dump_litter_routine
+            - script.stop: dump_to_home_routine
+            - switch.turn_off: switch_reverse
+            - switch.turn_on: switch_forward
+            - delay: 1.5s
+            - switch.turn_off: switch_forward
