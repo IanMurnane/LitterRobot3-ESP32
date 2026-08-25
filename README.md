@@ -12,6 +12,9 @@ This project bypasses the proprietary Globe Electronics mainboard and DFI (Drawe
 ![Sensor Integration](images/capture02.jpeg)
 *Bypassed pinch contacts and sensor routing.*
 
+<img src="images/handy01.jpeg" alt="Mobile Interface" width="300">
+*Mobile phone interface capture.*
+
 ## Bill of Materials (BOM)
 
 Here is the exact hardware used in this build:
