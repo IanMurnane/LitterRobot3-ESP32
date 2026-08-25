@@ -12,6 +12,7 @@ esphome:
       - switch.template.publish:
           id: switch_reverse
           state: OFF
+      - script.execute: repeated_clean_timer_loop
 
 esp32:
   board: nodemcu-32s
@@ -45,11 +46,16 @@ web_server:
     password: !secret litter_robot_esp32__web_password
 
 # ----------------------------------------
-# BACKGROUND MEMORY FOR STATISTICS
+# BACKGROUND MEMORY FOR STATISTICS & TIMERS
 # ----------------------------------------
 globals:
   - id: global_clean_counter
     type: int
+    restore_value: true
+    initial_value: '0'
+    
+  - id: repeated_timer_ms
+    type: uint32_t
     restore_value: true
     initial_value: '0'
 
@@ -108,6 +114,7 @@ script:
 
   - id: clean_cycle
     then:
+      - script.execute: repeated_clean_timer_loop
       - switch.turn_on: switch_forward
       - wait_until:
           binary_sensor.is_on: hall_yellow
@@ -143,6 +150,7 @@ script:
   - id: cancel_countdown
     then:
       - script.stop: automated_clean_countdown
+      - script.stop: repeated_clean_timer_loop
       - binary_sensor.template.publish:
           id: countdown_active
           state: OFF
@@ -154,31 +162,59 @@ script:
           id: countdown_active
           state: ON
       
-      # Wait based on the number slider
       - delay: !lambda "return (uint32_t)(id(delay_timer_minutes).state * 60000);"
 
-      # Increment the background counter right before the cycle starts
       - globals.set:
           id: global_clean_counter
           value: !lambda 'return id(global_clean_counter) + 1;'
 
-      # Instantly push the new number to the UI screen
       - sensor.template.publish:
           id: clean_counter_display
           state: !lambda 'return id(global_clean_counter);'
 
-      # START the clean cycle
       - script.execute: clean_cycle
       
-      # Reset the UI indicator
       - binary_sensor.template.publish:
           id: countdown_active
           state: OFF
+
+  # Repeated Timer Loop
+  - id: repeated_clean_timer_loop
+    mode: restart
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(repeated_timer_ms) > 0;'
+              - switch.is_off: master_disable
+          then:
+            - delay: !lambda 'return id(repeated_timer_ms);'
+            - script.execute: clean_cycle
 
 # ----------------------------------------
 # 3. MANUAL OVERRIDE SWITCHES
 # ----------------------------------------
 switch:
+  - platform: template
+    name: "Master Disable"
+    id: master_disable
+    icon: "mdi:power-plug-off"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - switch.template.publish:
+          id: master_disable
+          state: ON
+      # Stop any current countdown immediately
+      - script.execute: cancel_countdown
+    turn_off_action:
+      - switch.template.publish:
+          id: master_disable
+          state: OFF
+      # Restart the timer loops when turned back on
+      - script.execute: repeated_clean_timer_loop
+
   - platform: template
     name: "Action: Spin Forward"
     id: switch_forward
@@ -274,6 +310,37 @@ number:
     optimistic: true
     restore_value: true
 
+select:
+  - platform: template
+    name: "Regular Clean"
+    id: repeated_clean_interval
+    icon: "mdi:history"
+    entity_category: config
+    options:
+      - "Disabled"
+      - "1"
+      - "2"
+      - "3"
+      - "6"
+      - "12"
+      - "18"
+      - "24"
+    initial_option: "Disabled"
+    optimistic: true
+    restore_value: true
+    on_value:
+      - lambda: |-
+          uint32_t hours = 0;
+          if (x == "1") hours = 1;
+          else if (x == "2") hours = 2;
+          else if (x == "3") hours = 3;
+          else if (x == "6") hours = 6;
+          else if (x == "12") hours = 12;
+          else if (x == "18") hours = 18;
+          else if (x == "24") hours = 24;
+          id(repeated_timer_ms) = hours * 3600000;
+      - script.execute: repeated_clean_timer_loop
+
 # ----------------------------------------
 # 6. ANALOG SENSORS (Weight & Triggers)
 # ----------------------------------------
@@ -289,39 +356,75 @@ sensor:
           window_size: 10
           send_every: 5
     
-    # Hysteresis Logic for Cat Detection
     on_value_range:
+      # CONDITION 1: Cat is fully inside (Voltage drops)
       - below: 2.0
         then:
           - if:
               condition:
-                binary_sensor.is_off: cat_present
+                switch.is_off: master_disable
               then:
-                - binary_sensor.template.publish:
-                    id: cat_present
-                    state: ON
-                - script.execute: cancel_countdown
-                - script.stop: clean_cycle
-                - script.stop: dump_litter_routine
-                - script.stop: dump_to_home_routine
-                - script.execute: stop_motor
-                - switch.template.publish:
-                    id: switch_forward
-                    state: OFF
-                - switch.template.publish:
-                    id: switch_reverse
-                    state: OFF
+                - if:
+                    condition:
+                      binary_sensor.is_off: cat_present
+                    then:
+                      - binary_sensor.template.publish:
+                          id: cat_present
+                          state: ON
+                      - script.execute: cancel_countdown
+                      - script.stop: clean_cycle
+                      - script.stop: dump_litter_routine
+                      - script.stop: dump_to_home_routine
+                      - script.execute: stop_motor
+                      - switch.template.publish:
+                          id: switch_forward
+                          state: OFF
+                      - switch.template.publish:
+                          id: switch_reverse
+                          state: OFF
 
-      - above: 2.5
+      # CONDITION 2: Cat is standing on the step (Voltage spikes)
+      - above: 3.1
         then:
           - if:
               condition:
-                binary_sensor.is_on: cat_present
+                switch.is_off: master_disable
               then:
-                - binary_sensor.template.publish:
-                    id: cat_present
-                    state: OFF
-                - script.execute: automated_clean_countdown
+                - if:
+                    condition:
+                      binary_sensor.is_off: cat_present
+                    then:
+                      - binary_sensor.template.publish:
+                          id: cat_present
+                          state: ON
+                      - script.execute: cancel_countdown
+                      - script.stop: clean_cycle
+                      - script.stop: dump_litter_routine
+                      - script.stop: dump_to_home_routine
+                      - script.execute: stop_motor
+                      - switch.template.publish:
+                          id: switch_forward
+                          state: OFF
+                      - switch.template.publish:
+                          id: switch_reverse
+                          state: OFF
+
+      # CONDITION 3: Box is Empty / Resting State
+      - above: 2.5
+        below: 3.1
+        then:
+          - if:
+              condition:
+                switch.is_off: master_disable
+              then:
+                - if:
+                    condition:
+                      binary_sensor.is_on: cat_present
+                    then:
+                      - binary_sensor.template.publish:
+                          id: cat_present
+                          state: OFF
+                      - script.execute: automated_clean_countdown
 
   # Clean Read-Only Display for the Counter
   - platform: template
