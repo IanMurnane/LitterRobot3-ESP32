@@ -13,6 +13,8 @@ esphome:
           id: switch_reverse
           state: OFF
       - script.execute: repeated_clean_timer_loop
+      - script.execute: sample_baseline_weight
+
 
 esp32:
   board: nodemcu-32s
@@ -59,6 +61,18 @@ globals:
     restore_value: true
     initial_value: '0'
 
+  - id: baseline_weight
+    type: float
+    initial_value: '0.0'
+
+  - id: baseline_sampled
+    type: bool
+    initial_value: 'false'
+
+  - id: last_cat_weight
+    type: float
+    initial_value: '0.0'
+
 # ----------------------------------------
 # 1. MOTOR DRIVER PWM OUTPUTS
 # ----------------------------------------
@@ -81,6 +95,17 @@ output:
 # 2. MOTOR CONTROL SCRIPTS
 # ----------------------------------------
 script:
+  - id: sample_baseline_weight
+    then:
+      - delay: 10s
+      - lambda: |-
+          id(baseline_weight) = id(cat_weight_sensor).state;
+          id(baseline_sampled) = true;
+          ESP_LOGI("main", "Baseline weight sampled: %.3f V", id(baseline_weight));
+      - sensor.template.publish:
+          id: weight_baseline_display
+          state: !lambda 'return id(baseline_weight);'
+
   - id: cycle_forward
     then:
       - output.set_level:
@@ -114,7 +139,6 @@ script:
 
   - id: clean_cycle
     then:
-      - script.execute: repeated_clean_timer_loop
       - switch.turn_on: switch_forward
       - wait_until:
           binary_sensor.is_on: hall_yellow
@@ -123,13 +147,14 @@ script:
       - switch.turn_on: switch_reverse
       - wait_until:
           binary_sensor.is_on: hall_orange
-      - delay: 10s
+      - delay: 11s
       - switch.turn_off: switch_reverse
       - delay: 3s
       - switch.turn_on: switch_forward
       - wait_until:
           binary_sensor.is_on: hall_orange
       - switch.turn_off: switch_forward
+      - script.execute: repeated_clean_timer_loop
 
   - id: dump_litter_routine
     then:
@@ -172,6 +197,11 @@ script:
           id: clean_counter_display
           state: !lambda 'return id(global_clean_counter);'
 
+      - logger.log:
+          level: INFO
+          format: "Cleaning cycle triggered: Weight Sensor. Baseline was %.3f V, trigger was %.3f V"
+          args: [ 'id(baseline_weight)', 'id(last_cat_weight)' ]
+
       - script.execute: clean_cycle
       
       - binary_sensor.template.publish:
@@ -189,6 +219,9 @@ script:
               - switch.is_off: master_disable
           then:
             - delay: !lambda 'return id(repeated_timer_ms);'
+            - logger.log:
+                level: INFO
+                format: "Cleaning cycle triggered: Regular Cycle"
             - script.execute: clean_cycle
 
 # ----------------------------------------
@@ -256,6 +289,9 @@ button:
     id: button_clean
     on_press:
       - script.execute: cancel_countdown
+      - logger.log:
+          level: INFO
+          format: "Cleaning cycle triggered: Manual"
       - script.execute: clean_cycle
 
   - platform: template
@@ -310,9 +346,21 @@ number:
     optimistic: true
     restore_value: true
 
+  - platform: template
+    name: "Weight Trigger (V)"
+    id: weight_trigger_delta
+    icon: "mdi:scale-balance"
+    entity_category: config
+    min_value: 0.01
+    max_value: 0.20
+    step: 0.01
+    initial_value: 0.05
+    optimistic: true
+    restore_value: true
+
 select:
   - platform: template
-    name: "Regular Clean"
+    name: "Regular Clean (H)"
     id: repeated_clean_interval
     icon: "mdi:history"
     entity_category: config
@@ -356,75 +404,59 @@ sensor:
           window_size: 10
           send_every: 5
     
-    on_value_range:
-      # CONDITION 1: Cat is fully inside (Voltage drops)
-      - below: 2.0
-        then:
-          - if:
-              condition:
-                switch.is_off: master_disable
-              then:
-                - if:
-                    condition:
-                      binary_sensor.is_off: cat_present
-                    then:
-                      - binary_sensor.template.publish:
-                          id: cat_present
-                          state: ON
-                      - script.execute: cancel_countdown
-                      - script.stop: clean_cycle
-                      - script.stop: dump_litter_routine
-                      - script.stop: dump_to_home_routine
-                      - script.execute: stop_motor
-                      - switch.template.publish:
-                          id: switch_forward
-                          state: OFF
-                      - switch.template.publish:
-                          id: switch_reverse
-                          state: OFF
+    on_value:
+      # CONDITION 1: Cat is present (Voltage deviates from baseline)
+      - if:
+          condition:
+            lambda: |-
+              if (!id(baseline_sampled)) return false;
+              return abs(x - id(baseline_weight)) > id(weight_trigger_delta).state;
+          then:
+            - if:
+                condition:
+                  switch.is_off: master_disable
+                then:
+                  - if:
+                      condition:
+                        binary_sensor.is_off: cat_present
+                      then:
+                        - globals.set:
+                            id: last_cat_weight
+                            value: !lambda 'return x;'
+                        - binary_sensor.template.publish:
+                            id: cat_present
+                            state: ON
+                        - script.execute: cancel_countdown
+                        - script.stop: clean_cycle
+                        - script.stop: dump_litter_routine
+                        - script.stop: dump_to_home_routine
+                        - script.execute: stop_motor
+                        - switch.template.publish:
+                            id: switch_forward
+                            state: OFF
+                        - switch.template.publish:
+                            id: switch_reverse
+                            state: OFF
 
-      # CONDITION 2: Cat is standing on the step (Voltage spikes)
-      - above: 3.1
-        then:
-          - if:
-              condition:
-                switch.is_off: master_disable
-              then:
-                - if:
-                    condition:
-                      binary_sensor.is_off: cat_present
-                    then:
-                      - binary_sensor.template.publish:
-                          id: cat_present
-                          state: ON
-                      - script.execute: cancel_countdown
-                      - script.stop: clean_cycle
-                      - script.stop: dump_litter_routine
-                      - script.stop: dump_to_home_routine
-                      - script.execute: stop_motor
-                      - switch.template.publish:
-                          id: switch_forward
-                          state: OFF
-                      - switch.template.publish:
-                          id: switch_reverse
-                          state: OFF
-
-      # CONDITION 3: Box is Empty / Resting State
-      - above: 2.5
-        below: 3.1
-        then:
-          - if:
-              condition:
-                switch.is_off: master_disable
-              then:
-                - if:
-                    condition:
-                      binary_sensor.is_on: cat_present
-                    then:
-                      - binary_sensor.template.publish:
-                          id: cat_present
-                          state: OFF
-                      - script.execute: automated_clean_countdown
+      # CONDITION 2: Box is Empty / Resting State
+      - if:
+          condition:
+            lambda: |-
+              if (!id(baseline_sampled)) return false;
+              return abs(x - id(baseline_weight)) <= id(weight_trigger_delta).state;
+          then:
+            - if:
+                condition:
+                  switch.is_off: master_disable
+                then:
+                  - if:
+                      condition:
+                        binary_sensor.is_on: cat_present
+                      then:
+                        - binary_sensor.template.publish:
+                            id: cat_present
+                            state: OFF
+                        - script.execute: automated_clean_countdown
 
   # Clean Read-Only Display for the Counter
   - platform: template
@@ -435,6 +467,20 @@ sensor:
     update_interval: 10s
     lambda: 'return id(global_clean_counter);'
 
+  # Read-Only Display for Weight Baseline
+  - platform: template
+    name: "Weight Baseline (V)"
+    id: weight_baseline_display
+    icon: "mdi:scale-balance"
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (id(baseline_sampled)) {
+        return id(baseline_weight);
+      } else {
+        return NAN;
+      }
 # ----------------------------------------
 # 7. DIGITAL SENSORS & UI STATUS
 # ----------------------------------------
