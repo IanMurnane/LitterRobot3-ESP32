@@ -78,12 +78,12 @@ globals:
 # ----------------------------------------
 output:
   - platform: ledc
-    pin: GPIO18
+    pin: GPIO19
     id: motor_in1
     max_power: 0.80
 
   - platform: ledc
-    pin: GPIO19
+    pin: GPIO18
     id: motor_in2
     max_power: 0.80
 
