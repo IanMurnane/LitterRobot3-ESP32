@@ -47,6 +47,11 @@ web_server:
     username: glow
     password: !secret litter_robot_esp32__web_password
 
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+
 # ----------------------------------------
 # BACKGROUND MEMORY FOR STATISTICS & TIMERS
 # ----------------------------------------
@@ -171,6 +176,25 @@ script:
           binary_sensor.is_on: hall_orange
       - switch.turn_off: switch_forward
 
+  - id: check_dfi
+    then:
+      - if:
+          condition:
+            lambda: 'return id(dfi_distance).state <= id(dfi_trip_distance).state;'
+          then:
+            - logger.log:
+                level: INFO
+                format: "Drawer Full Indicator tripped at %.3f m"
+                args: [ 'id(dfi_distance).state' ]
+            - binary_sensor.template.publish:
+                id: dfi_full
+                state: ON
+            - switch.turn_on: master_disable
+          else:
+            - binary_sensor.template.publish:
+                id: dfi_full
+                state: OFF
+
   # Master Countdown Manager
   - id: cancel_countdown
     then:
@@ -183,6 +207,9 @@ script:
   - id: automated_clean_countdown
     mode: restart
     then:
+      - script.execute: check_dfi
+      - script.wait: check_dfi
+            
       - binary_sensor.template.publish:
           id: countdown_active
           state: ON
@@ -203,6 +230,8 @@ script:
           args: [ 'id(baseline_weight)', 'id(last_cat_weight)' ]
 
       - script.execute: clean_cycle
+      
+      - script.execute: check_dfi
       
       - binary_sensor.template.publish:
           id: countdown_active
@@ -335,7 +364,19 @@ button:
 # ----------------------------------------
 number:
   - platform: template
-    name: "Clean Delay"
+    name: "DFI Trip <= (m)"
+    id: dfi_trip_distance
+    icon: "mdi:ruler"
+    entity_category: config
+    min_value: 0.04
+    max_value: 0.30
+    step: 0.01
+    initial_value: 0.20
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Clean Delay (mins)"
     id: delay_timer_minutes
     icon: "mdi:timer-outline"
     entity_category: config
@@ -360,7 +401,7 @@ number:
 
 select:
   - platform: template
-    name: "Regular Clean (H)"
+    name: "Regular Clean (h)"
     id: repeated_clean_interval
     icon: "mdi:history"
     entity_category: config
@@ -393,6 +434,11 @@ select:
 # 6. ANALOG SENSORS (Weight & Triggers)
 # ----------------------------------------
 sensor:
+  - platform: vl53l0x
+    name: "Sensor: DFI"
+    id: dfi_distance
+    update_interval: 5s
+
   - platform: adc
     pin: GPIO32
     id: cat_weight_sensor
@@ -460,7 +506,7 @@ sensor:
 
   # Clean Read-Only Display for the Counter
   - platform: template
-    name: "Statistic: Cleaned"
+    name: "Stat: Cleaned Count"
     id: clean_counter_display
     icon: "mdi:counter"
     accuracy_decimals: 0
@@ -485,6 +531,11 @@ sensor:
 # 7. DIGITAL SENSORS & UI STATUS
 # ----------------------------------------
 binary_sensor:
+  - platform: template
+    name: "Status: DFI Full"
+    id: dfi_full
+    device_class: problem
+
   # Virtual UI Indicator: Is the cat inside?
   - platform: template
     name: "Status: Cat Present"
