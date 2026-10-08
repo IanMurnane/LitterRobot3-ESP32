@@ -189,7 +189,6 @@ script:
             - binary_sensor.template.publish:
                 id: dfi_full
                 state: ON
-            - switch.turn_on: master_disable
           else:
             - binary_sensor.template.publish:
                 id: dfi_full
@@ -207,29 +206,37 @@ script:
   - id: automated_clean_countdown
     mode: restart
     then:
-      - script.execute: check_dfi
-      - script.wait: check_dfi
-            
       - binary_sensor.template.publish:
           id: countdown_active
           state: ON
       
       - delay: !lambda "return (uint32_t)(id(delay_timer_minutes).state * 60000);"
 
-      - globals.set:
-          id: global_clean_counter
-          value: !lambda 'return id(global_clean_counter) + 1;'
+      - script.execute: check_dfi
+      - script.wait: check_dfi
 
-      - sensor.template.publish:
-          id: clean_counter_display
-          state: !lambda 'return id(global_clean_counter);'
+      - if:
+          condition:
+            binary_sensor.is_off: dfi_full
+          then:
+            - globals.set:
+                id: global_clean_counter
+                value: !lambda 'return id(global_clean_counter) + 1;'
 
-      - logger.log:
-          level: INFO
-          format: "Cleaning cycle triggered: Weight Sensor. Baseline was %.3f V, trigger was %.3f V"
-          args: [ 'id(baseline_weight)', 'id(last_cat_weight)' ]
+            - sensor.template.publish:
+                id: clean_counter_display
+                state: !lambda 'return id(global_clean_counter);'
 
-      - script.execute: clean_cycle
+            - logger.log:
+                level: INFO
+                format: "Cleaning cycle triggered: Weight Sensor. Baseline was %.3f V, trigger was %.3f V"
+                args: [ 'id(baseline_weight)', 'id(last_cat_weight)' ]
+
+            - script.execute: clean_cycle
+          else:
+            - logger.log:
+                level: INFO
+                format: "Clean aborted: DFI is full"
       
       - script.execute: check_dfi
       
@@ -248,10 +255,21 @@ script:
               - switch.is_off: master_disable
           then:
             - delay: !lambda 'return id(repeated_timer_ms);'
-            - logger.log:
-                level: INFO
-                format: "Cleaning cycle triggered: Regular Cycle"
-            - script.execute: clean_cycle
+            - script.execute: check_dfi
+            - script.wait: check_dfi
+            - if:
+                condition:
+                  binary_sensor.is_off: dfi_full
+                then:
+                  - logger.log:
+                      level: INFO
+                      format: "Cleaning cycle triggered: Regular Cycle"
+                  - script.execute: clean_cycle
+                else:
+                  - logger.log:
+                      level: INFO
+                      format: "Regular cycle aborted: DFI is full"
+                  - script.execute: repeated_clean_timer_loop
 
 # ----------------------------------------
 # 3. MANUAL OVERRIDE SWITCHES
