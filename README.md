@@ -6,6 +6,9 @@ This project bypasses the proprietary Globe Electronics mainboard and DFI (Drawe
 
 ## Hardware Setup & Photos
 
+![Litter-Robot 3](images/litter-robot-3.jpeg)
+*Fully assembled ESP32 custom Litter-Robot 3.*
+
 ![Main Board Wiring](images/capture01.jpeg)
 *Custom ESP32 logic board and harness wiring.*
 
