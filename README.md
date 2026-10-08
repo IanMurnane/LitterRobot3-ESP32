@@ -25,8 +25,7 @@ Here is the exact hardware used in this build:
 *   **Safety Switch:** Stock metal pinch contacts (wired directly to ESP32, proprietary DFI board bypassed)
 *   **Position Detection:** Hall Effect Sensors (for detecting the globe's Home and Dump positions)
 *   **Weight Detection:** Stock weight sensor (wired with a 10kΩ resistor)
-
-*(Note: A custom drawer-full sensing solution using a Time-of-Flight sensor is currently pending integration.)*
+*   **DFI Replacement:** [AZDelivery VL53L0X Time-of-Flight (ToF) Laser Ranging Sensor](https://www.amazon.de/dp/B086V37JJ7?ref=ppx_yo2ov_dt_b_fed_asin_title) (Replaces the stock drawer-full indicator)
 
 ## Pinout / Wiring Guide
 
@@ -41,6 +40,8 @@ Here is the exact hardware used in this build:
 | **Hall Sensor (Home)** | `GPIO 17` | Triggers LOW when magnet aligns |
 | **Hall Sensor (Dump)** | `GPIO 16` | Triggers LOW when magnet aligns |
 | **Weight Sensor** | `GPIO 32` | Read via ADC (wired with a 10kΩ resistor) |
+| **DFI Sensor (SDA)** | `GPIO 21` | I2C Data (VL53L0X) |
+| **DFI Sensor (SCL)** | `GPIO 22` | I2C Clock (VL53L0X) |
 
 ## Reverse-Engineering the Stock DFI Sensor
 
